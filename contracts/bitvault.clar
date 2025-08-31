@@ -280,3 +280,123 @@
     (ok true)
   )
 )
+
+;; Deactivates a digital asset (soft delete for provenance preservation)
+(define-public (archive-digital-asset (asset-id uint))
+  (let ((asset-record (unwrap! (map-get? digital-asset-registry { asset-id: asset-id })
+      ERR_ASSET_NOT_FOUND
+    )))
+    ;; Input validation
+    (asserts! (validate-asset-id asset-id) ERR_INVALID_ASSET_ID)
+    ;; Ownership verification
+    (asserts! (is-eq tx-sender (get owner asset-record)) ERR_UNAUTHORIZED_ACCESS)
+    ;; Prevent double-deactivation
+    (asserts! (get status asset-record) ERR_ASSET_DEACTIVATED)
+
+    ;; Archive the asset (preserves historical record)
+    (map-set digital-asset-registry { asset-id: asset-id }
+      (merge asset-record {
+        status: false,
+        last-modified-block: stacks-block-height,
+      })
+    )
+
+    (ok true)
+  )
+)
+
+;; QUERY INTERFACE (READ-ONLY FUNCTIONS)
+
+;; Retrieves complete asset information by ID
+(define-read-only (fetch-asset-details (asset-id uint))
+  (if (validate-asset-id asset-id)
+    (map-get? digital-asset-registry { asset-id: asset-id })
+    none
+  )
+)
+
+;; Locates asset by its content fingerprint
+(define-read-only (find-asset-by-fingerprint (content-fingerprint (buff 32)))
+  (match (map-get? fingerprint-to-asset { content-fingerprint: content-fingerprint })
+    fingerprint-record (let ((asset-id (get asset-id fingerprint-record)))
+      (if (validate-asset-id asset-id)
+        (map-get? digital-asset-registry { asset-id: asset-id })
+        none
+      )
+    )
+    none
+  )
+)
+
+;; Verifies ownership of a specific digital asset
+(define-read-only (validate-asset-ownership
+    (asset-id uint)
+    (claimed-owner principal)
+  )
+  (if (validate-asset-id asset-id)
+    (match (map-get? digital-asset-registry { asset-id: asset-id })
+      asset-record (is-eq (get owner asset-record) claimed-owner)
+      false
+    )
+    false
+  )
+)
+
+;; Retrieves creator's portfolio statistics
+(define-read-only (get-creator-asset-count (creator principal))
+  (default-to u0
+    (get total-assets (map-get? creator-portfolio { creator: creator }))
+  )
+)
+
+;; Checks if an asset exists and is currently active
+(define-read-only (is-asset-operational (asset-id uint))
+  (if (validate-asset-id asset-id)
+    (match (map-get? digital-asset-registry { asset-id: asset-id })
+      asset-record (get status asset-record)
+      false
+    )
+    false
+  )
+)
+
+;; Returns the next asset ID that will be assigned
+(define-read-only (peek-next-asset-id)
+  (var-get global-asset-counter)
+)
+
+;; Validates uniqueness of a content fingerprint
+(define-read-only (verify-fingerprint-uniqueness (content-fingerprint (buff 32)))
+  (is-none (map-get? fingerprint-to-asset { content-fingerprint: content-fingerprint }))
+)
+
+;; PROTOCOL ANALYTICS & METRICS
+
+;; Returns comprehensive protocol statistics
+(define-read-only (get-protocol-metrics)
+  {
+    total-assets-registered: (var-get total-registered-assets),
+    total-ownership-transfers: (var-get total-ownership-transfers),
+    next-asset-id: (var-get global-asset-counter),
+  }
+)
+
+;; Retrieves creator's registration history
+(define-read-only (get-creator-profile (creator principal))
+  (map-get? creator-portfolio { creator: creator })
+)
+
+;; UTILITY FUNCTIONS
+
+;; Checks if a principal is the protocol administrator
+(define-read-only (is-protocol-admin (principal-address principal))
+  (is-eq principal-address PROTOCOL_ADMIN)
+)
+
+;; Validates asset existence without revealing details
+(define-read-only (asset-exists (asset-id uint))
+  (if (validate-asset-id asset-id)
+    (is-some (map-get? digital-asset-registry { asset-id: asset-id }))
+    false
+  )
+)
