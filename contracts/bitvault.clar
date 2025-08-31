@@ -92,3 +92,93 @@
     (and (>= str-len min-len) (<= str-len max-len))
   )
 )
+
+;; Validates title string
+(define-private (validate-title (title (string-ascii 256)))
+  (validate-string-length title MIN_TITLE_LENGTH MAX_TITLE_LENGTH)
+)
+
+;; Validates description string
+(define-private (validate-description (description (string-ascii 1024)))
+  (validate-string-length description MIN_DESCRIPTION_LENGTH
+    MAX_DESCRIPTION_LENGTH
+  )
+)
+
+;; Sanitizes and validates asset description with explicit bounds checking
+(define-private (sanitize-description (raw-description (string-ascii 1024)))
+  (let ((desc-len (len raw-description)))
+    (if (and (>= desc-len MIN_DESCRIPTION_LENGTH) (<= desc-len MAX_DESCRIPTION_LENGTH))
+      (ok raw-description)
+      ERR_INVALID_STRING_LENGTH
+    )
+  )
+)
+
+;; CORE PROTOCOL FUNCTIONS
+
+;; Registers a new digital asset on the BitVault protocol
+(define-public (register-digital-asset
+    (asset-title (string-ascii 256))
+    (asset-description (string-ascii 1024))
+    (content-fingerprint (buff 32))
+    (media-type (string-ascii 64))
+  )
+  (let (
+      (new-asset-id (var-get global-asset-counter))
+      (current-block stacks-block-height)
+      (existing-fingerprint (map-get? fingerprint-to-asset { content-fingerprint: content-fingerprint }))
+      (creator-stats (map-get? creator-portfolio { creator: tx-sender }))
+      (desc-len (len asset-description))
+    )
+    ;; Input validation - ensure data integrity
+    (asserts! (validate-title asset-title) ERR_INVALID_PARAMETERS)
+    (asserts!
+      (and (>= desc-len MIN_DESCRIPTION_LENGTH) (<= desc-len MAX_DESCRIPTION_LENGTH))
+      ERR_INVALID_STRING_LENGTH
+    )
+    (asserts! (> (len content-fingerprint) u0) ERR_INVALID_PARAMETERS)
+    (asserts! (> (len media-type) u0) ERR_INVALID_PARAMETERS)
+    (asserts! (validate-asset-id new-asset-id) ERR_INVALID_ASSET_ID)
+
+    ;; Prevent duplicate content registration
+    (asserts! (is-none existing-fingerprint) ERR_DUPLICATE_ASSET_HASH)
+
+    ;; Create immutable asset record with validated data
+    (map-set digital-asset-registry { asset-id: new-asset-id } {
+      owner: tx-sender,
+      asset-title: asset-title,
+      asset-description: asset-description,
+      content-fingerprint: content-fingerprint,
+      media-type: media-type,
+      registration-block: current-block,
+      last-modified-block: current-block,
+      status: true,
+    })
+
+    ;; Establish fingerprint-to-ID mapping for O(1) lookups
+    (map-set fingerprint-to-asset { content-fingerprint: content-fingerprint } { asset-id: new-asset-id })
+
+    ;; Update creator portfolio statistics
+    (match creator-stats
+      existing-stats
+      ;; Update existing creator record
+      (map-set creator-portfolio { creator: tx-sender } {
+        total-assets: (+ (get total-assets existing-stats) u1),
+        first-registration-block: (get first-registration-block existing-stats),
+      })
+      ;; Initialize new creator record
+      (map-set creator-portfolio { creator: tx-sender } {
+        total-assets: u1,
+        first-registration-block: current-block,
+      })
+    )
+
+    ;; Update global protocol statistics
+    (var-set global-asset-counter (+ new-asset-id u1))
+    (var-set total-registered-assets (+ (var-get total-registered-assets) u1))
+
+    ;; Return the newly assigned asset ID
+    (ok new-asset-id)
+  )
+)
