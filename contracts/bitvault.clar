@@ -182,3 +182,101 @@
     (ok new-asset-id)
   )
 )
+
+;; Transfers ownership of a digital asset to a new principal
+(define-public (transfer-asset-ownership
+    (asset-id uint)
+    (new-owner principal)
+  )
+  (let (
+      (asset-record (unwrap! (map-get? digital-asset-registry { asset-id: asset-id })
+        ERR_ASSET_NOT_FOUND
+      ))
+      (current-owner (get owner asset-record))
+      (current-block stacks-block-height)
+    )
+    ;; Input validation
+    (asserts! (validate-asset-id asset-id) ERR_INVALID_ASSET_ID)
+    ;; Ownership verification - only current owner can transfer
+    (asserts! (is-eq tx-sender current-owner) ERR_UNAUTHORIZED_ACCESS)
+    ;; Prevent self-transfers (optimization)
+    (asserts! (not (is-eq current-owner new-owner)) ERR_INVALID_PARAMETERS)
+    ;; Ensure asset is active
+    (asserts! (get status asset-record) ERR_ASSET_DEACTIVATED)
+
+    ;; Execute ownership transfer
+    (map-set digital-asset-registry { asset-id: asset-id }
+      (merge asset-record {
+        owner: new-owner,
+        last-modified-block: current-block,
+      })
+    )
+
+    ;; Update portfolio statistics for both parties
+    (let (
+        (old-owner-stats (unwrap-panic (map-get? creator-portfolio { creator: current-owner })))
+        (new-owner-stats (map-get? creator-portfolio { creator: new-owner }))
+      )
+      ;; Decrement previous owner's asset count
+      (map-set creator-portfolio { creator: current-owner }
+        (merge old-owner-stats { total-assets: (- (get total-assets old-owner-stats) u1) })
+      )
+
+      ;; Update new owner's portfolio
+      (match new-owner-stats
+        existing-stats
+        ;; Increment existing owner's count
+        (map-set creator-portfolio { creator: new-owner }
+          (merge existing-stats { total-assets: (+ (get total-assets existing-stats) u1) })
+        )
+        ;; Initialize new owner's portfolio
+        (map-set creator-portfolio { creator: new-owner } {
+          total-assets: u1,
+          first-registration-block: current-block,
+        })
+      )
+    )
+
+    ;; Track global transfer statistics
+    (var-set total-ownership-transfers (+ (var-get total-ownership-transfers) u1))
+
+    (ok true)
+  )
+)
+
+;; Updates metadata for an existing digital asset
+(define-public (update-asset-metadata
+    (asset-id uint)
+    (asset-title (string-ascii 256))
+    (asset-description (string-ascii 1024))
+  )
+  (let (
+      (asset-record (unwrap! (map-get? digital-asset-registry { asset-id: asset-id })
+        ERR_ASSET_NOT_FOUND
+      ))
+      (desc-len (len asset-description))
+    )
+    ;; Input validation
+    (asserts! (validate-asset-id asset-id) ERR_INVALID_ASSET_ID)
+    (asserts! (validate-title asset-title) ERR_INVALID_PARAMETERS)
+    (asserts!
+      (and (>= desc-len MIN_DESCRIPTION_LENGTH) (<= desc-len MAX_DESCRIPTION_LENGTH))
+      ERR_INVALID_STRING_LENGTH
+    )
+    ;; Ownership verification
+    (asserts! (is-eq tx-sender (get owner asset-record)) ERR_UNAUTHORIZED_ACCESS)
+    ;; Ensure asset is active
+    (asserts! (get status asset-record) ERR_ASSET_DEACTIVATED)
+
+    ;; Execute metadata update with validated data
+    (map-set digital-asset-registry { asset-id: asset-id }
+      (merge asset-record {
+        asset-title: asset-title,
+        asset-description: asset-description,
+        last-modified-block: stacks-block-height,
+      })
+    )
+
+    (ok true)
+  )
+)
